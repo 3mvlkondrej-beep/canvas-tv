@@ -173,13 +173,26 @@ async function ytCapture(){
     capStream = await navigator.mediaDevices.getDisplayMedia({ video:{frameRate:60}, audio:false, preferCurrentTab:true, selfBrowserSurface:'include' });
     const track = capStream.getVideoTracks()[0];
     track.onended = ()=>{ if(capStream) stop(); };
+    const surf = (track.getSettings && track.getSettings().displaySurface) || '';
+    let cropped = false;
     if(window.CropTarget && track.cropTo){
-      await track.cropTo(await CropTarget.fromElement(box));
-    } else manualCrop = true;   // Firefox apod.: ořez ručně podle pozice přehrávače
+      try{ await track.cropTo(await CropTarget.fromElement(box)); cropped = true; }catch(e){ console.warn('cropTo', e); }
+    }
+    if(!cropped){
+      if(surf && surf!=='browser'){ throw Object.assign(new Error('Vybráno „'+surf+'“ místo karty – vyber kartu Canvas TV.'),{name:'WrongSurface'}); }
+      manualCrop = true;   // ořez ručně podle pozice přehrávače
+    }
     video.srcObject = capStream; muted=true; updMute();
     await video.play(); running=true; requestAnimationFrame(loop);
     msg('Zvuk hraje přímo YouTube přehrávač (vpravo dole – v něm ho zapni).', 6000);
-  }catch(e){ msg('Zachytávání bylo zrušeno nebo není podporováno.', 6000); stop(); }
+  }catch(e){
+    console.warn('capture', e);
+    const why = e.name==='NotAllowedError' ? 'zrušeno nebo zakázáno' : (e.message || e.name);
+    stop();
+    if(e.name==='WrongSurface'){ msg(e.message, 8000); return; }
+    msg('Zachytávání nevyšlo ('+why+'). Zkouším přímý stream…', 0);
+    if(await ytPiped()===false) ytFallback(id, 'Zachytávání ani přímý stream nevyšly ('+why+').');
+  }
 }
 // B) přímý stream přes veřejné Piped API (servery se mění, nemusí fungovat)
 const PIPED=['https://pipedapi.kavin.rocks','https://pipedapi.adminforge.de','https://api.piped.private.coffee','https://pipedapi.r4fo.com'];
@@ -211,12 +224,15 @@ const canCapture = !!(navigator.mediaDevices && navigator.mediaDevices.getDispla
 async function ytAuto(){
   if(canCapture) return ytCapture();
   const id=ytId($('yt').value); if(!id) return msg('Neplatný odkaz na YouTube.');
-  if(await ytPiped()===false){
-    // poslední záchrana: obyčejný přehrávač (do canvasu se na telefonu dostat nedá)
+  if(await ytPiped()===false) ytFallback(id, 'Přímý stream se nepodařilo získat.');
+}
+function ytFallback(id, why){
+  {
+    // poslední záchrana: obyčejný přehrávač (bez canvasu)
     stop(); $('sName').textContent='YouTube '+id+' (bez canvasu)';
     const box=$('ytBox'); box.style.display='block'; box.style.width='calc(100% - 24px)'; box.style.maxWidth='none';
     box.innerHTML=`<iframe src="https://www.youtube.com/embed/${id}?autoplay=1&playsinline=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
-    msg('Přímý stream se nepodařilo získat – hraje normální YouTube přehrávač (ne přes canvas).', 8000);
+    msg(why+' Hraje normální YouTube přehrávač (ne přes canvas).', 9000);
   }
 }
 $('ytCap').onclick=()=>canCapture?ytCapture():ytAuto();
