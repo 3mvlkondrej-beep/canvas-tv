@@ -153,7 +153,7 @@ function stop(){
   running=false; if(hls){hls.destroy(); hls=null;}
   if(capStream){ capStream.getTracks().forEach(t=>t.stop()); capStream=null; }
   manualCrop=false; video.srcObject=null;
-  $('ytBox').style.display='none'; $('ytBox').innerHTML='';
+  $('ytBox').style.display='none'; $('ytBox').innerHTML=''; $('ytBox').style.width=''; $('ytBox').style.maxWidth='';
   video.pause(); video.removeAttribute('src'); video.load();
 }
 
@@ -185,7 +185,7 @@ async function ytCapture(){
 const PIPED=['https://pipedapi.kavin.rocks','https://pipedapi.adminforge.de','https://api.piped.private.coffee','https://pipedapi.r4fo.com'];
 async function ytPiped(){
   const id=ytId($('yt').value); if(!id) return msg('Neplatný odkaz na YouTube.');
-  msg('Hledám funkční Piped server…', 0);
+  msg('Hledám funkční server pro přímý stream…', 0);
   for(const api of PIPED){
     try{
       const ctl=new AbortController(); setTimeout(()=>ctl.abort(),6000);
@@ -195,9 +195,33 @@ async function ytPiped(){
       if(url){ play(url,(d.title||'YouTube')+' (Piped)'); return; }
     }catch(e){}
   }
-  msg('Žádný Piped server teď neodpověděl. Použij „Zachytit přehrávač“.', 7000);
+  // Invidious (local=true = video jde přes server instance, s CORS)
+  for(const api of INVID){
+    try{
+      const ctl=new AbortController(); setTimeout(()=>ctl.abort(),6000);
+      const d=await (await fetch(`${api}/api/v1/videos/${id}?local=true`,{signal:ctl.signal})).json();
+      const f=(d.formatStreams||[]).filter(s=>s.url).sort((a,b)=>parseInt(b.resolution||0)-parseInt(a.resolution||0))[0];
+      if(f){ play(f.url.startsWith('http')?f.url:api+f.url,(d.title||'YouTube')+' (Invidious)'); return; }
+    }catch(e){}
+  }
+  return false;
 }
-$('ytCap').onclick=ytCapture; $('ytPiped').onclick=ytPiped;
+const INVID=['https://inv.nadeko.net','https://yewtu.be','https://invidious.nerdvpn.de','https://invidious.f5.si'];
+const canCapture = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia && window.CropTarget) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+async function ytAuto(){
+  if(canCapture) return ytCapture();
+  const id=ytId($('yt').value); if(!id) return msg('Neplatný odkaz na YouTube.');
+  if(await ytPiped()===false){
+    // poslední záchrana: obyčejný přehrávač (do canvasu se na telefonu dostat nedá)
+    stop(); $('sName').textContent='YouTube '+id+' (bez canvasu)';
+    const box=$('ytBox'); box.style.display='block'; box.style.width='calc(100% - 24px)'; box.style.maxWidth='none';
+    box.innerHTML=`<iframe src="https://www.youtube.com/embed/${id}?autoplay=1&playsinline=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+    msg('Přímý stream se nepodařilo získat – hraje normální YouTube přehrávač (ne přes canvas).', 8000);
+  }
+}
+$('ytCap').onclick=()=>canCapture?ytCapture():ytAuto();
+$('ytPiped').onclick=async()=>{ if(await ytPiped()===false) msg('Žádný server pro přímý stream teď neodpověděl.',7000); };
+if(!canCapture) $('ytCap').textContent='▶ Přehrát';
 const YT_TESTS=[
   ['Jak začala druhá světová válka (dokument)','https://www.youtube.com/watch?v=npMCckuphTg'],
   ['Druhá světová válka z pohledu Hitlera','https://www.youtube.com/watch?v=h7C26H8ym1w'],
@@ -205,7 +229,7 @@ const YT_TESTS=[
 ];
 YT_TESTS.forEach(([n,u])=>{
   const b=document.createElement('div'); b.className='ch'; b.style.padding='6px 4px'; b.innerHTML='▶ '+n;
-  b.onclick=()=>{ $('yt').value=u; ytCapture(); };
+  b.onclick=()=>{ $('yt').value=u; ytAuto(); };
   $('ytTests').appendChild(b);
 });
 function play(url, name){
@@ -217,8 +241,14 @@ function play(url, name){
     hls.on(Hls.Events.MANIFEST_PARSED, start);
     hls.on(Hls.Events.ERROR, (_,d)=>{ if(d.fatal){ msg('Stream nejde načíst ('+d.details+'). Často kvůli CORS nebo geoblokaci.', 7000); stop(); } });
   } else {
-    video.src = url; video.addEventListener('loadedmetadata', start, {once:true});
-    video.onerror = ()=>msg('Stream nejde načíst.', 6000);
+    video.crossOrigin='anonymous'; video.src = url;
+    video.addEventListener('loadedmetadata', start, {once:true});
+    video.onerror = ()=>{
+      if(video.crossOrigin){ // server nepovoluje CORS → zkusit bez něj (JPEG režim pak nejde)
+        video.removeAttribute('crossorigin'); video.src=url;
+        video.addEventListener('loadedmetadata', start, {once:true});
+      } else msg('Stream nejde načíst.', 6000);
+    };
   }
 }
 function start(){
@@ -263,7 +293,12 @@ async function loop(t){
     frames++; secFrames++;
     $('sCount').textContent = frames;
     if(t-secT>=1000){ $('sReal').textContent=(secFrames*1000/(t-secT)).toFixed(1); secFrames=0; secT=t; }
-  }catch(e){ console.warn(e); }
+  }catch(e){
+    if(e && e.name==='SecurityError' && opt.mode!=='direct'){
+      opt.mode='direct'; $('mode').value='direct';
+      msg('Tento zdroj nepovoluje převod na JPEG – přepnuto na přímé kreslení.', 6000);
+    } else console.warn(e);
+  }
   finally{ busy=false; }
 }
 
