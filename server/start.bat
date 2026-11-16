@@ -3,6 +3,8 @@ chcp 65001 >nul
 title Canvas TV server
 cd /d "%~dp0"
 set PATH=%~dp0;%PATH%
+echo Ukoncuji predchozi beh serveru (pokud bezi)...
+powershell -NoProfile -Command "Get-Process python,cloudflared -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*CanvasTV-server*' } | Stop-Process -Force"
 if not exist python\python.exe (
   echo Stahuji Python...
   curl -L -o py.zip https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
@@ -24,6 +26,8 @@ if not exist cloudflared.exe (
   echo Stahuji cloudflared...
   curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
 )
+if exist py.zip del /q py.zip
+if exist deno.zip del /q deno.zip
 echo Aktualizuji yt-dlp...
 yt-dlp.exe -U
 python\python.exe server.py

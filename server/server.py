@@ -17,12 +17,12 @@ def yt_info(vid):
     if c and time.time() - c[0] < 1800:
         return c[1]
     url = 'https://www.youtube.com/watch?v=' + vid
-    cmd = [os.path.join(DIR, 'yt-dlp.exe'), '--no-playlist', '--no-warnings',
+    cmd = [os.path.join(DIR, 'yt-dlp.exe'), '--no-playlist', '--no-warnings', '--encoding', 'utf-8',
            '-f', 'b[vcodec!=none][acodec!=none][ext=mp4]/b[vcodec!=none][acodec!=none]',
            '--print', 'title', '--print', 'urls', url]
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=90,
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120,
                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    lines = [l for l in p.stdout.splitlines() if l.strip()]
+    lines = [l for l in (p.stdout or '').splitlines() if l.strip()]
     if p.returncode != 0 or len(lines) < 2:
         raise RuntimeError((p.stderr or 'yt-dlp selhal').strip().splitlines()[-1][:300])
     data = {'title': lines[0], 'url': lines[1]}
@@ -97,12 +97,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if not r.headers.get('Content-Length'): self.close_connection = True
 
 class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True; allow_reuse_address = True
+    daemon_threads = True; allow_reuse_address = (os.name != 'nt')
 
 def tunnel():
     exe = os.path.join(DIR, 'cloudflared.exe')
     while True:
-        p = subprocess.Popen([exe, 'tunnel', '--no-autoupdate', '--url', 'http://localhost:%d' % PORT],
+        p = subprocess.Popen([exe, 'tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:%d' % PORT],
                              stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         for line in p.stderr:

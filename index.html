@@ -214,7 +214,7 @@ async function ytCapture(){
       manualCrop = true;   // ořez ručně podle pozice přehrávače
     }
     video.srcObject = capStream; muted=true; updMute();
-    await video.play(); running=true; requestAnimationFrame(loop);
+    await video.play(); running=true; startLoop();
     msg('Zvuk hraje přímo YouTube přehrávač (vpravo dole – v něm ho zapni).', 6000);
   }catch(e){
     console.warn('capture', e);
@@ -306,15 +306,21 @@ function play(url, name){
 }
 function start(){
   video.muted = muted;
-  video.play().then(()=>{ $('msg').style.display='none'; running=true; requestAnimationFrame(loop); })
-    .catch(()=>{ video.muted=true; muted=true; updMute(); video.play().then(()=>{running=true; requestAnimationFrame(loop);}); });
+  video.play().then(()=>{ $('msg').style.display='none'; running=true; startLoop(); })
+    .catch(()=>{ video.muted=true; muted=true; updMute(); video.play().then(()=>{running=true; startLoop();}); });
 }
 
 /* ---------- smyčka: snímek → obrázek → canvas ---------- */
+// plánovač snímků: setTimeout (běží i tam, kde requestAnimationFrame stojí)
+let loopTimer=null;
+function startLoop(){
+  clearTimeout(loopTimer);
+  const tick=()=>{ if(!running) return; loop(performance.now()); loopTimer=setTimeout(tick, Math.max(1, Math.min(15, 1000/opt.fps/4))); };
+  tick();
+}
 async function loop(t){
   if(!running) return;
-  requestAnimationFrame(loop);
-  if(busy || t - lastT < 1000/opt.fps || video.readyState < 2) return;
+  if(busy || t - lastT < 1000/opt.fps - 2 || video.readyState < 2) return;
   lastT = t; busy = true;
   try{
     if(!video.videoWidth) return;
