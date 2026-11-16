@@ -52,6 +52,13 @@
   </div>
 
   <div class="box">
+    <label>Můj server (odkaz z pracovního PC)</label>
+    <input id="srv" type="text" placeholder="https://….trycloudflare.com/?key=…">
+    <div class="row"><button id="srvGo" class="ghost">Připojit</button><span id="srvSt" style="align-self:center;font-size:12px;color:var(--dim)">nepřipojeno</span></div>
+    <label style="display:flex;gap:6px;align-items:center"><input id="viaSrv" type="checkbox" checked> TV kanály posílat přes server</label>
+  </div>
+
+  <div class="box">
     <label>YouTube (odkaz nebo ID videa)</label>
     <input id="yt" type="text" placeholder="https://www.youtube.com/watch?v=…">
     <label>Testovací videa (klikni = spustí se)</label>
@@ -100,6 +107,30 @@
 <video id="v" playsinline crossorigin="anonymous"></video>
 
 <script>
+/* ---------- můj server ---------- */
+let SRV='', SKEY='';
+function setSrv(link, save){
+  try{ const u=new URL(link.trim()); SRV=u.origin; SKEY=u.searchParams.get('key')||''; }catch(e){ SRV=''; SKEY=''; }
+  if(save){ try{ localStorage.setItem('ctvSrv', link.trim()); }catch(e){} }
+}
+function viaSrv(u){ return (SRV && document.getElementById('viaSrv').checked && !u.startsWith(SRV)) ? SRV+'/p?key='+SKEY+'&u='+encodeURIComponent(u) : u; }
+async function pingSrv(){
+  const st=document.getElementById('srvSt');
+  if(!SRV){ st.textContent='nepřipojeno'; return false; }
+  st.textContent='zkouším…';
+  try{ const r=await fetch(SRV+'/ping?key='+SKEY); if(r.ok){ st.textContent='✅ připojeno'; st.style.color='#5c5'; return true; } st.textContent='❌ špatný klíč'; }
+  catch(e){ st.textContent='❌ server neodpovídá'; }
+  st.style.color='#f66'; return false;
+}
+async function ytServer(id){
+  msg('Server stahuje informace o videu (může trvat 5–20 s)…', 0);
+  try{
+    const r=await fetch(SRV+'/yt?key='+SKEY+'&id='+id); const j=await r.json();
+    if(!r.ok) throw new Error(j.error||r.status);
+    play(SRV+j.path, j.title+' (server)'); return true;
+  }catch(e){ msg('Server video nezískal: '+e.message, 9000); return false; }
+}
+
 const PLAYLIST = 'https://iptv-org.github.io/iptv/countries/cz.m3u';
 const $ = id => document.getElementById(id);
 const video = $('v'), cv = $('cv'), ctx = cv.getContext('2d');
@@ -141,7 +172,7 @@ function renderList(){
   channels.filter(c=>c.name.toLowerCase().includes(f)).forEach(c=>{
     const d=document.createElement('div'); d.className='ch';
     d.innerHTML = `${c.logo?`<img src="${c.logo}" onerror="this.style.visibility='hidden'">`:'<img>'}<div>${c.name}<small>${c.group||''}</small></div>`;
-    d.onclick=()=>{ document.querySelectorAll('.ch.on').forEach(x=>x.classList.remove('on')); d.classList.add('on'); $('url').value=c.url; play(c.url,c.name); };
+    d.onclick=()=>{ document.querySelectorAll('.ch.on').forEach(x=>x.classList.remove('on')); d.classList.add('on'); $('url').value=c.url; play(viaSrv(c.url),c.name); };
     L.appendChild(d);
   });
 }
@@ -222,8 +253,9 @@ async function ytPiped(){
 const INVID=['https://inv.nadeko.net','https://yewtu.be','https://invidious.nerdvpn.de','https://invidious.f5.si'];
 const canCapture = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia && window.CropTarget) && !/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
 async function ytAuto(){
-  if(canCapture) return ytCapture();
   const id=ytId($('yt').value); if(!id) return msg('Neplatný odkaz na YouTube.');
+  if(SRV){ stop(); if(await ytServer(id)) return; }
+  if(canCapture) return ytCapture();
   if(await ytPiped()===false) ytFallback(id, 'Přímý stream se nepodařilo získat.');
 }
 function ytFallback(id, why){
@@ -235,9 +267,14 @@ function ytFallback(id, why){
     msg(why+' Hraje normální YouTube přehrávač (ne přes canvas).', 9000);
   }
 }
-$('ytCap').onclick=()=>canCapture?ytCapture():ytAuto();
+$('ytCap').onclick=ytAuto;
 $('ytPiped').onclick=async()=>{ if(await ytPiped()===false) msg('Žádný server pro přímý stream teď neodpověděl.',7000); };
-if(!canCapture) $('ytCap').textContent='▶ Přehrát';
+$('ytCap').textContent='▶ Přehrát';
+$('srvGo').onclick=()=>{ setSrv($('srv').value,true); pingSrv(); };
+{ const p=new URLSearchParams(location.search);
+  let link = (p.get('key') && /trycloudflare\.com$|^localhost$/.test(location.hostname)) ? location.origin+'/?key='+p.get('key') : '';
+  if(!link){ try{ link=localStorage.getItem('ctvSrv')||''; }catch(e){} }
+  if(link){ $('srv').value=link; setSrv(link, !!p.get('key')); pingSrv(); } }
 const YT_TESTS=[
   ['Jak začala druhá světová válka (dokument)','https://www.youtube.com/watch?v=npMCckuphTg'],
   ['Druhá světová válka z pohledu Hitlera','https://www.youtube.com/watch?v=h7C26H8ym1w'],
@@ -322,7 +359,7 @@ async function loop(t){
 let muted = true;
 function updMute(){ $('mute').textContent = muted ? '🔇 Zvuk vyp.' : '🔊 Zvuk zap.'; }
 $('mute').onclick = ()=>{ muted=!muted; video.muted=muted; updMute(); };
-$('go').onclick = ()=>{ const u=$('url').value.trim(); if(u) play(u); };
+$('go').onclick = ()=>{ const u=$('url').value.trim(); if(!u) return; const id=ytId(u); if(id && SRV && /youtu/.test(u)) return ytServer(id); play(viaSrv(u)); };
 $('stop').onclick = ()=>{ stop(); $('sName').textContent='–'; };
 $('fs').onclick = ()=>{ (cv.requestFullscreen||cv.webkitRequestFullscreen).call(cv); };
 cv.ondblclick = ()=>$('fs').click();
