@@ -34,6 +34,9 @@
   #stats b { color:var(--tx); font-weight:600; }
   #msg { position:absolute; top:12px; left:50%; transform:translateX(-50%); background:#000c; padding:8px 14px; border-radius:6px; font-size:13px; display:none; max-width:80%; text-align:center; }
   video { display:none; }
+  #ytBox { position:absolute; right:12px; bottom:52px; width:480px; max-width:60%; aspect-ratio:16/9; background:#000; border:1px solid var(--line); border-radius:6px; overflow:hidden; display:none; box-shadow:0 6px 24px #000a; }
+  #ytBox iframe { width:100%; height:100%; border:0; display:block; }
+  #ytTag { position:absolute; right:12px; bottom:calc(52px + min(270px, 60% * 9 / 16) + 4px); font-size:11px; color:var(--dim); display:none; }
   @media (max-width:760px){ body{grid-template-columns:1fr; grid-template-rows:auto 1fr; height:auto;} aside{max-height:50vh;} main{height:60vh;} }
 </style>
 </head>
@@ -46,6 +49,13 @@
     <label>Vlastní stream (.m3u8 / .mp4)</label>
     <input id="url" type="text" placeholder="https://…/playlist.m3u8">
     <div class="row"><button id="go">Přehrát</button><button id="stop" class="ghost">Stop</button></div>
+  </div>
+
+  <div class="box">
+    <label>YouTube (odkaz nebo ID videa)</label>
+    <input id="yt" type="text" placeholder="https://www.youtube.com/watch?v=…">
+    <div class="row"><button id="ytCap" title="Vloží YouTube přehrávač a jeho obraz zachytává do canvasu">▶ Zachytit přehrávač</button></div>
+    <div class="row"><button id="ytPiped" class="ghost" title="Zkusí získat přímý stream přes veřejné Piped servery">Přímý stream (Piped, test)</button></div>
   </div>
 
   <div class="box">
@@ -74,6 +84,7 @@
 <main>
   <div id="stage"><canvas id="cv" width="1280" height="720"></canvas></div>
   <div id="msg"></div>
+  <div id="ytBox"></div>
   <div id="stats">
     <span>Kanál: <b id="sName">–</b></span>
     <span>Cíl: <b id="sTarget">25</b> fps</span>
@@ -135,10 +146,56 @@ function renderList(){
 $('filter').oninput = renderList;
 
 /* ---------- zdroj: skryté video ---------- */
+let capStream = null, manualCrop = false;
 function stop(){
   running=false; if(hls){hls.destroy(); hls=null;}
+  if(capStream){ capStream.getTracks().forEach(t=>t.stop()); capStream=null; }
+  manualCrop=false; video.srcObject=null;
+  $('ytBox').style.display='none'; $('ytBox').innerHTML='';
   video.pause(); video.removeAttribute('src'); video.load();
 }
+
+/* ---------- YouTube ---------- */
+function ytId(s){
+  s=s.trim(); if(/^[\w-]{11}$/.test(s)) return s;
+  const m=s.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/); return m?m[1]:null;
+}
+// A) zachytávání vloženého přehrávače (Chrome/Edge: Region Capture)
+async function ytCapture(){
+  const id=ytId($('yt').value); if(!id) return msg('Neplatný odkaz na YouTube.');
+  stop(); $('sName').textContent='YouTube '+id;
+  const box=$('ytBox'); box.style.display='block';
+  box.innerHTML=`<iframe src="https://www.youtube.com/embed/${id}?autoplay=1&mute=1&playsinline=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+  msg('V dialogu prohlížeče vyber TUTO kartu (Canvas TV) a potvrď sdílení.', 8000);
+  try{
+    capStream = await navigator.mediaDevices.getDisplayMedia({ video:{frameRate:60}, audio:false, preferCurrentTab:true, selfBrowserSurface:'include' });
+    const track = capStream.getVideoTracks()[0];
+    track.onended = ()=>{ if(capStream) stop(); };
+    if(window.CropTarget && track.cropTo){
+      await track.cropTo(await CropTarget.fromElement(box));
+    } else manualCrop = true;   // Firefox apod.: ořez ručně podle pozice přehrávače
+    video.srcObject = capStream; muted=true; updMute();
+    await video.play(); running=true; requestAnimationFrame(loop);
+    msg('Zvuk hraje přímo YouTube přehrávač (vpravo dole – v něm ho zapni).', 6000);
+  }catch(e){ msg('Zachytávání bylo zrušeno nebo není podporováno.', 6000); stop(); }
+}
+// B) přímý stream přes veřejné Piped API (servery se mění, nemusí fungovat)
+const PIPED=['https://pipedapi.kavin.rocks','https://pipedapi.adminforge.de','https://api.piped.private.coffee','https://pipedapi.r4fo.com'];
+async function ytPiped(){
+  const id=ytId($('yt').value); if(!id) return msg('Neplatný odkaz na YouTube.');
+  msg('Hledám funkční Piped server…', 0);
+  for(const api of PIPED){
+    try{
+      const ctl=new AbortController(); setTimeout(()=>ctl.abort(),6000);
+      const d=await (await fetch(`${api}/streams/${id}`,{signal:ctl.signal})).json();
+      const mp4=(d.videoStreams||[]).filter(s=>!s.videoOnly && s.url).sort((a,b)=>(b.height||0)-(a.height||0))[0];
+      const url=d.hls || (mp4 && mp4.url);
+      if(url){ play(url,(d.title||'YouTube')+' (Piped)'); return; }
+    }catch(e){}
+  }
+  msg('Žádný Piped server teď neodpověděl. Použij „Zachytit přehrávač“.', 7000);
+}
+$('ytCap').onclick=ytCapture; $('ytPiped').onclick=ytPiped;
 function play(url, name){
   stop(); $('sName').textContent = name || url.split('/').pop();
   msg('Připojuji stream…', 0);
@@ -165,20 +222,25 @@ async function loop(t){
   if(busy || t - lastT < 1000/opt.fps || video.readyState < 2) return;
   lastT = t; busy = true;
   try{
-    const vw=video.videoWidth, vh=video.videoHeight; if(!vw) return;
+    if(!video.videoWidth) return;
+    let sx=0, sy=0, vw=video.videoWidth, vh=video.videoHeight;
+    if(manualCrop){
+      const r=$('ytBox').getBoundingClientRect(), k=video.videoWidth/window.innerWidth;
+      sx=Math.round(r.left*k); sy=Math.round(r.top*k); vw=Math.round(r.width*k); vh=Math.round(r.height*k);
+    }
     const w=Math.max(16,Math.round(vw*opt.scale)), h=Math.max(9,Math.round(vh*opt.scale));
     if(cv.width!==vw||cv.height!==vh){ cv.width=vw; cv.height=vh; }
     $('sRes').textContent = w+'×'+h;
     ctx.imageSmoothingEnabled = opt.scale > .5;
 
     if(opt.mode==='direct'){
-      ctx.drawImage(video,0,0,vw,vh);
+      ctx.drawImage(video,sx,sy,vw,vh,0,0,vw,vh);
     } else if(opt.mode==='bitmap'){
-      const bmp = await createImageBitmap(video,{resizeWidth:w,resizeHeight:h});
+      const bmp = await createImageBitmap(video,sx,sy,vw,vh,{resizeWidth:w,resizeHeight:h});
       ctx.drawImage(bmp,0,0,vw,vh); bmp.close();
     } else {
       if(work.width!==w||work.height!==h){ work.width=w; work.height=h; }
-      wctx.drawImage(video,0,0,w,h);
+      wctx.drawImage(video,sx,sy,vw,vh,0,0,w,h);
       const blob = await new Promise(r=>work.toBlob(r,'image/jpeg',opt.q));
       if(blob){
         $('sSize').textContent = (blob.size/1024).toFixed(1)+' kB';
