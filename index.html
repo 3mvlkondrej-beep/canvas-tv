@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas TV – stream jako sled snímků</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<style>
+  :root { --bg:#0e0f12; --panel:#17191e; --line:#2a2d35; --tx:#e8e8ea; --dim:#8b8f99; --acc:#ff5a36; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.4 system-ui, sans-serif; display:grid; grid-template-columns:300px 1fr; height:100vh; }
+  aside { background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  aside h1 { font-size:16px; margin:14px 14px 4px; letter-spacing:.5px; }
+  aside h1 span { color:var(--acc); }
+  .sub { color:var(--dim); font-size:12px; margin:0 14px 10px; }
+  .box { padding:10px 14px; border-top:1px solid var(--line); }
+  label { display:block; font-size:12px; color:var(--dim); margin:6px 0 3px; }
+  input[type=text], select { width:100%; background:#0f1115; color:var(--tx); border:1px solid var(--line); border-radius:6px; padding:7px 8px; font:inherit; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  button { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:7px 12px; font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:#262931; }
+  .row { display:flex; gap:6px; margin-top:6px; }
+  .row > * { flex:1; }
+  #list { flex:1; overflow:auto; min-height:0; }
+  .ch { display:flex; align-items:center; gap:8px; padding:7px 14px; cursor:pointer; border-bottom:1px solid #1d2026; }
+  .ch:hover { background:#1f2229; }
+  .ch.on { background:#2b1d19; border-left:3px solid var(--acc); padding-left:11px; }
+  .ch img { width:34px; height:22px; object-fit:contain; background:#fff1; border-radius:3px; }
+  .ch small { color:var(--dim); display:block; font-size:11px; }
+  main { position:relative; display:flex; flex-direction:column; min-width:0; }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center; background:#000; min-height:0; }
+  canvas { max-width:100%; max-height:100%; image-rendering:auto; }
+  #stats { display:flex; gap:18px; flex-wrap:wrap; padding:8px 14px; background:var(--panel); border-top:1px solid var(--line); font:12px ui-monospace, monospace; color:var(--dim); }
+  #stats b { color:var(--tx); font-weight:600; }
+  #msg { position:absolute; top:12px; left:50%; transform:translateX(-50%); background:#000c; padding:8px 14px; border-radius:6px; font-size:13px; display:none; max-width:80%; text-align:center; }
+  video { display:none; }
+  @media (max-width:760px){ body{grid-template-columns:1fr; grid-template-rows:auto 1fr; height:auto;} aside{max-height:50vh;} main{height:60vh;} }
+</style>
+</head>
+<body>
+<aside>
+  <h1>CANVAS<span>TV</span></h1>
+  <div class="sub">Video se nepřehrává jako video – každý snímek se vytáhne jako obrázek a vykreslí na &lt;canvas&gt;.</div>
+
+  <div class="box">
+    <label>Vlastní stream (.m3u8 / .mp4)</label>
+    <input id="url" type="text" placeholder="https://…/playlist.m3u8">
+    <div class="row"><button id="go">Přehrát</button><button id="stop" class="ghost">Stop</button></div>
+  </div>
+
+  <div class="box">
+    <label>Snímků za sekundu: <b id="fpsv">25</b></label>
+    <input id="fps" type="range" min="1" max="60" value="25">
+    <label>Režim snímků</label>
+    <select id="mode">
+      <option value="jpeg">JPEG obrázky (enkód → dekód → kreslení)</option>
+      <option value="bitmap">ImageBitmap (bez komprese)</option>
+      <option value="direct">Přímé kreslení z videa</option>
+    </select>
+    <label>Kvalita JPEG: <b id="qv">0.70</b></label>
+    <input id="q" type="range" min="0.05" max="1" step="0.05" value="0.7">
+    <label>Rozlišení snímku: <b id="sv">100 %</b></label>
+    <input id="scale" type="range" min="10" max="100" step="5" value="100">
+    <div class="row"><button id="mute" class="ghost">🔇 Zvuk vyp.</button><button id="fs" class="ghost">⛶ Celá obr.</button></div>
+  </div>
+
+  <div class="box" style="padding-bottom:4px">
+    <label>Česká TV (seznam iptv-org)</label>
+    <input id="filter" type="text" placeholder="Hledat kanál…">
+  </div>
+  <div id="list"><div class="ch"><small>Načítám seznam kanálů…</small></div></div>
+</aside>
+
+<main>
+  <div id="stage"><canvas id="cv" width="1280" height="720"></canvas></div>
+  <div id="msg"></div>
+  <div id="stats">
+    <span>Kanál: <b id="sName">–</b></span>
+    <span>Cíl: <b id="sTarget">25</b> fps</span>
+    <span>Skutečně: <b id="sReal">0</b> fps</span>
+    <span>Snímků: <b id="sCount">0</b></span>
+    <span>Snímek: <b id="sRes">–</b></span>
+    <span>Velikost JPEG: <b id="sSize">–</b></span>
+  </div>
+</main>
+
+<video id="v" playsinline crossorigin="anonymous"></video>
+
+<script>
+const PLAYLIST = 'https://iptv-org.github.io/iptv/countries/cz.m3u';
+const $ = id => document.getElementById(id);
+const video = $('v'), cv = $('cv'), ctx = cv.getContext('2d');
+const work = document.createElement('canvas'), wctx = work.getContext('2d');
+let hls = null, channels = [], running = false, busy = false;
+let lastT = 0, frames = 0, secFrames = 0, secT = performance.now();
+
+const opt = { fps:25, mode:'jpeg', q:0.7, scale:1 };
+$('fps').oninput = e => { opt.fps = +e.target.value; $('fpsv').textContent = opt.fps; $('sTarget').textContent = opt.fps; };
+$('q').oninput = e => { opt.q = +e.target.value; $('qv').textContent = opt.q.toFixed(2); };
+$('scale').oninput = e => { opt.scale = e.target.value/100; $('sv').textContent = e.target.value + ' %'; };
+$('mode').onchange = e => { opt.mode = e.target.value; $('sSize').textContent = '–'; };
+
+function msg(t, ms=4000){ const m=$('msg'); m.textContent=t; m.style.display='block'; clearTimeout(msg.t); if(ms) msg.t=setTimeout(()=>m.style.display='none',ms); }
+
+/* ---------- seznam kanálů ---------- */
+async function loadList(){
+  try{
+    const txt = await (await fetch(PLAYLIST)).text();
+    const lines = txt.split(/\r?\n/);
+    for(let i=0;i<lines.length;i++){
+      if(!lines[i].startsWith('#EXTINF')) continue;
+      const inf = lines[i];
+      let j=i+1; while(j<lines.length && (lines[j].startsWith('#')||!lines[j].trim())) j++;
+      const url = (lines[j]||'').trim(); if(!url) continue;
+      channels.push({
+        name: inf.split(',').slice(1).join(',').trim(),
+        logo: (inf.match(/tvg-logo="([^"]*)"/)||[])[1]||'',
+        group: (inf.match(/group-title="([^"]*)"/)||[])[1]||'',
+        url
+      });
+    }
+    renderList();
+  }catch(e){ $('list').innerHTML='<div class="ch"><small>Seznam se nepodařilo načíst. Vlož URL streamu ručně.</small></div>'; }
+}
+function renderList(){
+  const f = $('filter').value.toLowerCase();
+  const L = $('list'); L.innerHTML='';
+  channels.filter(c=>c.name.toLowerCase().includes(f)).forEach(c=>{
+    const d=document.createElement('div'); d.className='ch';
+    d.innerHTML = `${c.logo?`<img src="${c.logo}" onerror="this.style.visibility='hidden'">`:'<img>'}<div>${c.name}<small>${c.group||''}</small></div>`;
+    d.onclick=()=>{ document.querySelectorAll('.ch.on').forEach(x=>x.classList.remove('on')); d.classList.add('on'); $('url').value=c.url; play(c.url,c.name); };
+    L.appendChild(d);
+  });
+}
+$('filter').oninput = renderList;
+
+/* ---------- zdroj: skryté video ---------- */
+function stop(){
+  running=false; if(hls){hls.destroy(); hls=null;}
+  video.pause(); video.removeAttribute('src'); video.load();
+}
+function play(url, name){
+  stop(); $('sName').textContent = name || url.split('/').pop();
+  msg('Připojuji stream…', 0);
+  if(url.includes('.m3u8') && window.Hls && Hls.isSupported()){
+    hls = new Hls({ lowLatencyMode:true });
+    hls.loadSource(url); hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, start);
+    hls.on(Hls.Events.ERROR, (_,d)=>{ if(d.fatal){ msg('Stream nejde načíst ('+d.details+'). Často kvůli CORS nebo geoblokaci.', 7000); stop(); } });
+  } else {
+    video.src = url; video.addEventListener('loadedmetadata', start, {once:true});
+    video.onerror = ()=>msg('Stream nejde načíst.', 6000);
+  }
+}
+function start(){
+  video.muted = muted;
+  video.play().then(()=>{ $('msg').style.display='none'; running=true; requestAnimationFrame(loop); })
+    .catch(()=>{ video.muted=true; muted=true; updMute(); video.play().then(()=>{running=true; requestAnimationFrame(loop);}); });
+}
+
+/* ---------- smyčka: snímek → obrázek → canvas ---------- */
+async function loop(t){
+  if(!running) return;
+  requestAnimationFrame(loop);
+  if(busy || t - lastT < 1000/opt.fps || video.readyState < 2) return;
+  lastT = t; busy = true;
+  try{
+    const vw=video.videoWidth, vh=video.videoHeight; if(!vw) return;
+    const w=Math.max(16,Math.round(vw*opt.scale)), h=Math.max(9,Math.round(vh*opt.scale));
+    if(cv.width!==vw||cv.height!==vh){ cv.width=vw; cv.height=vh; }
+    $('sRes').textContent = w+'×'+h;
+    ctx.imageSmoothingEnabled = opt.scale > .5;
+
+    if(opt.mode==='direct'){
+      ctx.drawImage(video,0,0,vw,vh);
+    } else if(opt.mode==='bitmap'){
+      const bmp = await createImageBitmap(video,{resizeWidth:w,resizeHeight:h});
+      ctx.drawImage(bmp,0,0,vw,vh); bmp.close();
+    } else {
+      if(work.width!==w||work.height!==h){ work.width=w; work.height=h; }
+      wctx.drawImage(video,0,0,w,h);
+      const blob = await new Promise(r=>work.toBlob(r,'image/jpeg',opt.q));
+      if(blob){
+        $('sSize').textContent = (blob.size/1024).toFixed(1)+' kB';
+        const img = await createImageBitmap(blob);
+        ctx.drawImage(img,0,0,vw,vh); img.close();
+      }
+    }
+    frames++; secFrames++;
+    $('sCount').textContent = frames;
+    if(t-secT>=1000){ $('sReal').textContent=(secFrames*1000/(t-secT)).toFixed(1); secFrames=0; secT=t; }
+  }catch(e){ console.warn(e); }
+  finally{ busy=false; }
+}
+
+/* ---------- ovládání ---------- */
+let muted = true;
+function updMute(){ $('mute').textContent = muted ? '🔇 Zvuk vyp.' : '🔊 Zvuk zap.'; }
+$('mute').onclick = ()=>{ muted=!muted; video.muted=muted; updMute(); };
+$('go').onclick = ()=>{ const u=$('url').value.trim(); if(u) play(u); };
+$('stop').onclick = ()=>{ stop(); $('sName').textContent='–'; };
+$('fs').onclick = ()=>{ (cv.requestFullscreen||cv.webkitRequestFullscreen).call(cv); };
+cv.ondblclick = ()=>$('fs').click();
+
+// úvodní obrazovka
+ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+ctx.fillStyle='#555'; ctx.font='28px system-ui'; ctx.textAlign='center';
+ctx.fillText('Vyber kanál vlevo', cv.width/2, cv.height/2);
+loadList();
+</script>
+</body>
+</html>
