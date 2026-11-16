@@ -54,6 +54,8 @@
   <div class="box">
     <label>YouTube (odkaz nebo ID videa)</label>
     <input id="yt" type="text" placeholder="https://www.youtube.com/watch?v=…">
+    <label>Testovací videa (klikni = spustí se)</label>
+    <div id="ytTests"></div>
     <div class="row"><button id="ytCap" title="Vloží YouTube přehrávač a jeho obraz zachytává do canvasu">▶ Zachytit přehrávač</button></div>
     <div class="row"><button id="ytPiped" class="ghost" title="Zkusí získat přímý stream přes veřejné Piped servery">Přímý stream (Piped, test)</button></div>
   </div>
@@ -196,6 +198,16 @@ async function ytPiped(){
   msg('Žádný Piped server teď neodpověděl. Použij „Zachytit přehrávač“.', 7000);
 }
 $('ytCap').onclick=ytCapture; $('ytPiped').onclick=ytPiped;
+const YT_TESTS=[
+  ['Jak začala druhá světová válka (dokument)','https://www.youtube.com/watch?v=npMCckuphTg'],
+  ['Druhá světová válka z pohledu Hitlera','https://www.youtube.com/watch?v=h7C26H8ym1w'],
+  ['Válečné vlaky ve II. světové válce – 1. část','https://www.youtube.com/watch?v=WNlF4jJdu7o'],
+];
+YT_TESTS.forEach(([n,u])=>{
+  const b=document.createElement('div'); b.className='ch'; b.style.padding='6px 4px'; b.innerHTML='▶ '+n;
+  b.onclick=()=>{ $('yt').value=u; ytCapture(); };
+  $('ytTests').appendChild(b);
+});
 function play(url, name){
   stop(); $('sName').textContent = name || url.split('/').pop();
   msg('Připojuji stream…', 0);
